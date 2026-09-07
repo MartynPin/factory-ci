@@ -57,11 +57,21 @@ fi
 # мерджится ни один PR, и об этом узнаёшь только при первом мердже.
 LAST=$(gh api "repos/$REPO/commits" -q '.[0].sha' 2>/dev/null || echo "")
 if [ -n "$LAST" ]; then
-  NAMES=$(gh api "repos/$REPO/commits/$LAST/check-runs" -q '.check_runs[].name' 2>/dev/null || echo "")
+  RUNS=$(gh api "repos/$REPO/commits/$LAST/check-runs" 2>/dev/null || echo "")
+  NAMES=$(printf '%s' "$RUNS" | jq -r '.check_runs[].name' 2>/dev/null || echo "")
+  PENDING=$(printf '%s' "$RUNS" | jq -r '[.check_runs[] | select(.status != "completed")] | length' 2>/dev/null || echo 0)
+
   if [ -z "$NAMES" ]; then
     echo "(на последнем коммите нет проверок — сверить имена не с чем)"
   elif printf '%s\n' "$NAMES" | grep -qx "$CTX"; then
     ok "требуемое имя '$CTX' совпадает с фактически приходящим"
+  elif [ "${PENDING:-0}" -gt 0 ]; then
+    # Незавершённый прогон — не расхождение. Проверка, краснеющая на
+    # нормальном ходе событий, обесценивает собственный итог: на неё
+    # перестают смотреть, и настоящее расхождение проходит незамеченным.
+    # Обратная сторона L-007: там проверка врала «ok», здесь — «расхождение».
+    echo "ОТЛОЖЕНО: прогон на $LAST ещё идёт (незавершённых проверок: $PENDING),"
+    echo "          '$CTX' появляется последним. Повторите после завершения."
   else
     say "требуется '$CTX', а фактически приходят: $(printf '%s' "$NAMES" | tr '\n' ',' | sed 's/,$//')"
   fi
@@ -83,7 +93,26 @@ if gh api "repos/$REPO/environments/production" >/dev/null 2>&1; then
   R=$(gh api "repos/$REPO/environments/production" -q '[.protection_rules[]?.type] | join(",")' 2>/dev/null)
   case "$R" in
     *required_reviewers*) ok "ручной апрув деплоя включён" ;;
-    *) say "у production нет обязательного ревьюера — деплой пойдёт без человека" ;;
+    *)
+      # Обязательный ревьюер окружения недоступен на текущем тарифе (D-042).
+      # Это ограничение, а не расхождение: исправить его настройкой нельзя.
+      # Поэтому проверяется то, что реально защищает при таком тарифе —
+      # что деплой запускается только вручную.
+      echo "ОГРАНИЧЕНИЕ: обязательный ревьюер деплоя недоступен на текущем тарифе."
+      DEPLOY=$(gh api "repos/$REPO/contents/.github/workflows" -q '.[].name' 2>/dev/null | grep -i deploy || true)
+      if [ -z "$DEPLOY" ]; then
+        ok "деплой-workflow отсутствует — запускать нечего"
+      else
+        for w in $DEPLOY; do
+          TRIG=$(gh api "repos/$REPO/contents/.github/workflows/$w" -q '.content' 2>/dev/null \
+                 | base64 -d 2>/dev/null | sed -n '/^on:/,/^[a-z]/p' || echo "")
+          case "$TRIG" in
+            *push*|*pull_request*|*schedule*)
+              say "$w запускается автоматически, а ревьюер деплоя недоступен — деплой пойдёт без человека" ;;
+            *) ok "$w запускается только вручную" ;;
+          esac
+        done
+      fi ;;
   esac
 else
   say "окружения production нет: секреты деплоя негде хранить изолированно"
