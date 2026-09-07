@@ -34,6 +34,17 @@ jobs:
           node-version: ${{ inputs.node-version }}
           cache: npm
       - run: npm ci
+      # Подготовка базы. Дублируется в трёх джобах намеренно: reusable workflow
+      # исполняется в контексте вызывающего репозитория, поэтому composite
+      # action из factory-ci здесь недоступен, а `uses:` не принимает выражений.
+      - name: Подготовка базы
+        shell: bash
+        run: |
+          [ -f prisma/schema.prisma ] || { echo "Prisma не используется."; exit 0; }
+          if [ ! -f .env ] && [ -f .env.example ]; then cp .env.example .env; fi
+          export DATABASE_URL="${DATABASE_URL:-file:./dev.db}"
+          npx prisma generate
+          npx prisma migrate deploy
       - id: run
         shell: bash
         run: |
@@ -67,6 +78,17 @@ jobs:
           node-version: ${{ inputs.node-version }}
           cache: npm
       - run: npm ci
+      # Подготовка базы. Дублируется в трёх джобах намеренно: reusable workflow
+      # исполняется в контексте вызывающего репозитория, поэтому composite
+      # action из factory-ci здесь недоступен, а `uses:` не принимает выражений.
+      - name: Подготовка базы
+        shell: bash
+        run: |
+          [ -f prisma/schema.prisma ] || { echo "Prisma не используется."; exit 0; }
+          if [ ! -f .env ] && [ -f .env.example ]; then cp .env.example .env; fi
+          export DATABASE_URL="${DATABASE_URL:-file:./dev.db}"
+          npx prisma generate
+          npx prisma migrate deploy
       - name: ${{ matrix.gate }}
         run: |
           case "${{ matrix.gate }}" in
@@ -88,6 +110,17 @@ jobs:
           node-version: ${{ inputs.node-version }}
           cache: npm
       - run: npm ci
+      # Подготовка базы. Дублируется в трёх джобах намеренно: reusable workflow
+      # исполняется в контексте вызывающего репозитория, поэтому composite
+      # action из factory-ci здесь недоступен, а `uses:` не принимает выражений.
+      - name: Подготовка базы
+        shell: bash
+        run: |
+          [ -f prisma/schema.prisma ] || { echo "Prisma не используется."; exit 0; }
+          if [ ! -f .env ] && [ -f .env.example ]; then cp .env.example .env; fi
+          export DATABASE_URL="${DATABASE_URL:-file:./dev.db}"
+          npx prisma generate
+          npx prisma migrate deploy
       - name: e2e
         shell: bash
         run: |
