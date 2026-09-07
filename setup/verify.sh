@@ -84,6 +84,18 @@ for f in .github/workflows/*.yml .github/workflows/*.yaml; do
     else
       say "$(basename "$f"): вызов factory-ci по '@$ref' вместо 40-символьного SHA"
     fi
+
+    # Владелец в вызове обязан совпадать с владельцем репозитория. После
+    # переноса между аккаунтами старый путь отвечает редиректом, но reusable
+    # workflow по редиректу не резолвится — прогон падает за 0 секунд с
+    # «workflow file issue». Проверка формата SHA этого не ловит.
+    called_owner=$(printf '%s' "$line" | sed -E 's|.*uses:[[:space:]]*([^/]+)/factory-ci.*|\1|')
+    want_owner="${REPO%%/*}"
+    if [ "$called_owner" = "$want_owner" ]; then
+      ok "$(basename "$f"): владелец factory-ci совпадает ($called_owner)"
+    else
+      say "$(basename "$f"): вызов идёт к '$called_owner/factory-ci', а репозиторий принадлежит '$want_owner'"
+    fi
   done < <(grep -h "factory-ci/.github/workflows" "$f" 2>/dev/null || true)
 done
 [ "$FOUND" = 0 ] && echo "(в этом каталоге вызовов factory-ci не найдено — запускайте из корня продуктового репозитория)"
