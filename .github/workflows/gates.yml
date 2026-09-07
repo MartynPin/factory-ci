@@ -166,14 +166,56 @@ jobs:
         shell: bash
         run: |
           [ -f /tmp/changed.txt ] || exit 0
-          # Эти пути меняет только владелец, отдельным PR. Блокировка не
-          # снимается прочими гейтами.
+          # Эти пути закрыты для изменения через PR. Единственное исключение —
+          # обновление пина factory-ci: смена SHA в строке `uses:` при
+          # неизменном адресе workflow. Урок L-011: прямой push в main закрыт
+          # защитой ветки, поэтому без этого исключения `.github/*` нельзя
+          # изменить НИКАК, включая владельцу, и CI застывает навсегда.
           bad=0
           while read -r f; do
             case "$f" in
-              .github/*|CLAUDE.md|docs/adr/*|*secret*|*.pem|.env|.env.*)
+              CLAUDE.md|docs/adr/*|*secret*|*.pem|.env|.env.*)
                 echo "::error file=$f::Защищённый путь. Изменение возможно только отдельным PR владельца."
                 bad=1 ;;
+              .github/*)
+                if ! node - "$f" "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" <<'NODE'
+          const { execSync } = require("child_process");
+          const [file, base, head] = process.argv.slice(2);
+          const diff = execSync(`git diff -U0 ${base} ${head} -- "${file}"`, { encoding: "utf8" });
+
+          const lines = diff.split("\n").filter(l => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l));
+          const added   = lines.filter(l => l[0] === "+").map(l => l.slice(1).trim());
+          const removed = lines.filter(l => l[0] === "-").map(l => l.slice(1).trim());
+
+          // Допустима ровно одна форма строки: uses: <адрес>@<40 hex>.
+          const PIN = /^uses:\s*(\S+)@([0-9a-f]{40})$/;
+          const parse = (arr) => {
+            const out = [];
+            for (const l of arr) {
+              const m = l.match(PIN);
+              if (!m) return null;
+              out.push(m[1]);
+            }
+            return out;
+          };
+
+          const a = parse(added), r = parse(removed);
+          if (!a || !r) { console.log("Изменены не только строки пина."); process.exit(1); }
+
+          // Адрес workflow меняться не должен: иначе подменяется сам источник
+          // проверок, а не его версия.
+          if (a.length !== r.length || a.some((x, i) => x !== r[i])) {
+            console.log("Изменён адрес вызываемого workflow, а не только его версия.");
+            process.exit(1);
+          }
+          console.log("Изменение сводится к обновлению SHA: " + a.join(", "));
+          NODE
+                  then
+                    echo "::error file=$f::Защищённый путь. Через PR допустимо только обновление SHA в строке uses: при неизменном адресе workflow."
+                    bad=1
+                  else
+                    echo "::notice file=$f::Обновление пина. Адрес workflow не изменён."
+                  fi ;;
             esac
           done < /tmp/changed.txt
           exit "$bad"
