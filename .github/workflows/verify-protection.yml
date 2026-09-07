@@ -1,0 +1,49 @@
+# Защита ветки живёт вне git (находка A-13): её нет в диффе, она не
+# восстанавливается из истории, и её отключение не оставляет следа в коде.
+# Настройка, которую никто не проверяет, — это настройка, которой нет.
+name: verify-protection
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"     # понедельник, 06:00 UTC
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Проверить фактическое состояние защиты main
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.PROTECTION_READ_TOKEN }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set +e
+          out=$(bash setup/verify.sh "$REPO" 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          {
+            echo "report<<EOF"
+            echo "$out"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          exit "$code"
+
+      - name: Завести issue при расхождении
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh issue create --repo "$REPO" \
+            --title "Защита main расходится с ожидаемой" \
+            --label "infra" \
+            --body "$(printf '%s\n' "${{ steps.check.outputs.report }}")"

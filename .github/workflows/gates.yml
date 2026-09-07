@@ -1,0 +1,256 @@
+# Гейты фабрики. Вызывается из продуктового репозитория по SHA:
+#
+#   uses: OWNER/factory-ci/.github/workflows/gates.yml@<40-символьный SHA>
+#
+# Единственная обязательная проверка в branch protection — джоба `verdict`.
+# Остальные джобы могут добавляться и убираться без правки настроек ветки.
+name: gates
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: "22"
+      run-e2e:
+        type: boolean
+        default: true
+
+# Пустой набор по умолчанию: каждая джоба добавляет себе ровно то, что нужно.
+permissions: {}
+
+jobs:
+  # --- Предполёт. Отдельная джоба, потому что её провал — не провал работы ---
+  preflight:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      status: ${{ steps.run.outputs.status }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - run: npm ci
+      - id: run
+        shell: bash
+        run: |
+          set +e
+          bash scripts/preflight.sh
+          code=$?
+          set -e
+          if [ "$code" = 2 ]; then
+            echo "status=env_fail" >> "$GITHUB_OUTPUT"
+            echo "::warning title=env_fail::Сломано окружение, а не код. Попытка задачи не засчитывается."
+            exit 1
+          elif [ "$code" != 0 ]; then
+            echo "status=fail" >> "$GITHUB_OUTPUT"
+            exit "$code"
+          fi
+          echo "status=ok" >> "$GITHUB_OUTPUT"
+
+  checks:
+    needs: preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        gate: [lint, typecheck, unit, build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - run: npm ci
+      - name: ${{ matrix.gate }}
+        run: |
+          case "${{ matrix.gate }}" in
+            lint)      npm run lint ;;
+            typecheck) npm run typecheck ;;
+            unit)      npm run test:unit ;;
+            build)     npm run build ;;
+          esac
+
+  e2e:
+    needs: preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - run: npm ci
+      - name: e2e
+        shell: bash
+        run: |
+          if [ "${{ inputs.run-e2e }}" != "true" ]; then
+            echo "e2e выключены входным параметром"; exit 0
+          fi
+          if ! ls tests/e2e/*.spec.ts >/dev/null 2>&1; then
+            echo "e2e-тестов нет"; exit 0
+          fi
+          npx playwright install --with-deps chromium
+          npm run test:e2e
+
+  # --- Проверки диффа ------------------------------------------------------
+  # Код проверок живёт ЗДЕСЬ, а не в продуктовом репозитории. Reusable workflow
+  # исполняется в контексте вызывающего репозитория, поэтому файлы factory-ci
+  # там недоступны, а второй checkout потребовал бы токена на приватный репо —
+  # ровно того секрета, которого у джоб гейтов быть не должно.
+  diff-guards:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Список изменённых файлов
+        id: changed
+        shell: bash
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          if [ -z "$base" ] || [ -z "$head" ]; then
+            echo "Не pull_request — проверки диффа пропускать нельзя, но сравнивать нечего."
+            echo "files=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --name-only "$base" "$head" > /tmp/changed.txt
+          echo "Изменено файлов: $(wc -l < /tmp/changed.txt)"
+          cat /tmp/changed.txt
+
+      - name: Защищённые пути
+        shell: bash
+        run: |
+          [ -f /tmp/changed.txt ] || exit 0
+          # Эти пути меняет только владелец, отдельным PR. Блокировка не
+          # снимается прочими гейтами.
+          bad=0
+          while read -r f; do
+            case "$f" in
+              .github/*|CLAUDE.md|docs/adr/*|*secret*|*.pem|.env|.env.*)
+                echo "::error file=$f::Защищённый путь. Изменение возможно только отдельным PR владельца."
+                bad=1 ;;
+            esac
+          done < /tmp/changed.txt
+          exit "$bad"
+
+      - name: Ослабление проверок
+        shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          [ -f /tmp/changed.txt ] || exit 0
+          node - "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" <<'NODE'
+          const fs = require("fs");
+          const { execSync } = require("child_process");
+
+          const changed = fs.readFileSync("/tmp/changed.txt", "utf8")
+            .split("\n").map(s => s.trim()).filter(Boolean);
+
+          // Список check-config. Обязан пополняться при добавлении любого
+          // нового инструмента проверки: инструмент, чей конфиг не в списке,
+          // выведен из-под контроля.
+          const CONFIG = [
+            /^eslint\.config\./, /^tsconfig\.json$/, /^vitest\.config\./,
+            /^playwright\.config\./, /^security-baseline\.json$/,
+            /^scripts\/gates\.sh$/, /^scripts\/preflight\.sh$/,
+            /^scripts\/apply-overlay\.mjs$/,
+          ];
+
+          const hits = changed.filter(f => CONFIG.some(re => re.test(f)));
+
+          // Ослабление внутри кода проверок: скипы, only, подавление типов.
+          const suspicious = [];
+          for (const f of changed) {
+            if (!/\.(ts|tsx|js|mjs)$/.test(f)) continue;
+            let diff = "";
+            try {
+              diff = execSync(`git diff -U0 ${process.argv[2]} ${process.argv[3]} -- "${f}"`,
+                              { encoding: "utf8" });
+            } catch { continue; }
+            const added = diff.split("\n").filter(l => l.startsWith("+") && !l.startsWith("+++"));
+            for (const line of added) {
+              if (/\.(skip|only)\s*\(/.test(line) ||
+                  /\b(xit|xdescribe|it\.todo)\b/.test(line) ||
+                  /@ts-expect-error|@ts-ignore/.test(line) ||
+                  /eslint-disable/.test(line)) {
+                suspicious.push(`${f}: ${line.slice(1).trim()}`);
+              }
+            }
+          }
+
+          if (hits.length === 0 && suspicious.length === 0) {
+            console.log("Конфигурация проверок не затронута.");
+            process.exit(0);
+          }
+
+          console.log("Затронуты проверки:");
+          hits.forEach(h => console.log("  конфиг: " + h));
+          suspicious.forEach(s => console.log("  в коде: " + s));
+
+          // Изменение РАЗРЕШЕНО, но обязано нести обоснование: легитимное
+          // ослабление синтаксически неотличимо от нелегитимного, и отличает
+          // их только текст, который человек прочитает. Урок L-002.
+          const body = process.env.PR_BODY || "";
+          if (!/##\s*Ослабление проверок/i.test(body)) {
+            console.log("");
+            console.log("::error title=Нет обоснования::PR затрагивает проверки, но в описании нет блока '## Ослабление проверок'. Изменение не запрещено — но обязано быть объяснено, и объяснение уходит ревьюеру отдельным вердиктом.");
+            process.exit(1);
+          }
+          console.log("");
+          console.log("::notice title=Ослабление проверок::Обоснование есть. Требуется отдельный вердикт ревьюера по этому блоку.");
+          NODE
+
+  # --- Единственная обязательная проверка ----------------------------------
+  verdict:
+    needs: [preflight, checks, e2e, diff-guards]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Разбор результатов
+        shell: bash
+        env:
+          PREFLIGHT: ${{ needs.preflight.result }}
+          PREFLIGHT_STATUS: ${{ needs.preflight.outputs.status }}
+          CHECKS: ${{ needs.checks.result }}
+          E2E: ${{ needs.e2e.result }}
+          GUARDS: ${{ needs.diff-guards.result }}
+        run: |
+          echo "предполёт: $PREFLIGHT ($PREFLIGHT_STATUS)"
+          echo "гейты:     $CHECKS"
+          echo "e2e:       $E2E"
+          echo "дифф:      $GUARDS"
+
+          if [ "$PREFLIGHT_STATUS" = "env_fail" ]; then
+            echo "::error title=env_fail::Отказ окружения. Попытка задачи НЕ засчитывается, ретрай не запускать."
+            echo "ENVFAIL=1" >> "$GITHUB_ENV"
+            exit 1
+          fi
+
+          bad=0
+          for r in "$PREFLIGHT" "$CHECKS" "$E2E" "$GUARDS"; do
+            # skipped засчитывается как провал: пропущенная проверка ничего не проверила
+            [ "$r" = "success" ] || bad=1
+          done
+          [ "$bad" = 0 ] || { echo "::error::Есть непройденные проверки."; exit 1; }
+          echo "Все проверки пройдены."
+
+      - name: Метка env_fail
+        if: always() && env.ENVFAIL == '1' && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr edit "${{ github.event.pull_request.number }}" --add-label env_fail --repo "${{ github.repository }}"
