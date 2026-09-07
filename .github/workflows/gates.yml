@@ -212,6 +212,40 @@ jobs:
           console.log("::notice title=Ослабление проверок::Обоснование есть. Требуется отдельный вердикт ревьюера по этому блоку.");
           NODE
 
+      - name: Сужение контракта
+        shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # Урок L-009. Новое ОБЯЗАТЕЛЬНОЕ свойство в типе, который уже
+          # использовали чужие тесты, ломает их. typecheck это ловит, но
+          # сообщением TS2769 в чужом файле — причина не названа.
+          if [ ! -f scripts/contract-guard.mjs ]; then
+            echo "::notice title=Проверка контракта отсутствует::В репозитории нет scripts/contract-guard.mjs. Обновите проект из шаблона factory-knowledge."
+            exit 0
+          fi
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          if [ -z "$base" ] || [ -z "$head" ]; then
+            echo "Не pull_request — сравнивать нечего."
+            exit 0
+          fi
+
+          if out=$(node scripts/contract-guard.mjs "$base" "$head" 2>&1); then
+            echo "$out"
+            exit 0
+          fi
+          echo "$out"
+
+          # Осознанное сужение не запрещено, но обязано быть объяснено — тот же
+          # порядок, что и для ослабления проверок (L-002).
+          if printf '%s' "$PR_BODY" | grep -qiE '^##[[:space:]]*Изменение контракта'; then
+            echo "::notice title=Изменение контракта::Обоснование есть. Требуется отдельный вердикт ревьюера по этому блоку."
+            exit 0
+          fi
+          echo "::error title=Сужение контракта::В существующий контракт добавлено обязательное свойство. Сделайте его опциональным со значением по умолчанию — либо объясните блоком '## Изменение контракта' в описании PR."
+          exit 1
+
   # --- Единственная обязательная проверка ----------------------------------
   verdict:
     needs: [preflight, checks, e2e, diff-guards]

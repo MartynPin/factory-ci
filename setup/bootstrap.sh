@@ -99,11 +99,11 @@ else
 {
   "required_status_checks": {
     "strict": true,
-    "contexts": ["verdict"]
+    "contexts": ["gates / verdict"]
   },
   "enforce_admins": true,
   "required_pull_request_reviews": {
-    "required_approving_review_count": 1,
+    "required_approving_review_count": 0,
     "dismiss_stale_reviews": true
   },
   "restrictions": null,
@@ -153,7 +153,7 @@ if [ "$DRY" = "--dry-run" ]; then
 else
   UID_OWNER=$(gh api user -q .id 2>/dev/null || echo "")
   if [ -n "$UID_OWNER" ]; then
-    gh api "repos/$REPO/environments/production" -X PUT --input - > /dev/null <<JSON
+    if gh api "repos/$REPO/environments/production" -X PUT --input - > /tmp/fc-env.out 2>&1 <<JSON
 {
   "wait_timer": 0,
   "reviewers": [{ "type": "User", "id": $UID_OWNER }],
@@ -163,7 +163,23 @@ else
   }
 }
 JSON
-    echo "    обязательный ревьюер: пользователь $UID_OWNER"
+    then
+      echo "    обязательный ревьюер: пользователь $UID_OWNER"
+    elif grep -q "billing plan" /tmp/fc-env.out; then
+      # Ограничение тарифа, а не ошибка. Ревьюер окружения — единственное, что
+      # на Free недоступно; защита ветки при этом работает. Сообщаем СНАЧАЛА,
+      # потом пробуем создать окружение без правила: резервный вызов тоже
+      # может упасть, и тогда set -e убьёт скрипт до сообщения — так уже было.
+      echo "    ОГРАНИЧЕНИЕ ТАРИФА: обязательный ревьюер деплоя недоступен."
+      echo "    Деплой обязан оставаться ручным (workflow_dispatch),"
+      echo "    пока не оплачен GitHub Team."
+      gh api "repos/$REPO/environments/production" -X PUT -f wait_timer=0 >/dev/null 2>&1 \
+        && echo "    окружение создано без обязательного ревьюера" \
+        || echo "    окружение создать не удалось — деплой настраивается вручную"
+    else
+      echo "    ВНИМАНИЕ: не удалось настроить окружение:"
+      sed 's/^/      /' /tmp/fc-env.out
+    fi
   else
     echo "    ВНИМАНИЕ: не удалось определить id владельца — ревьюер не задан."
     echo "    Settings → Environments → production → Required reviewers."

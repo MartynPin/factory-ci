@@ -35,16 +35,36 @@ check '.enforce_admins.enabled'                              true  "правил
 check '.required_linear_history.enabled'                     true  "линейная история"
 check '.allow_force_pushes.enabled'                          false "force-push запрещён"
 check '.allow_deletions.enabled'                             false "удаление ветки запрещено"
-check '.required_pull_request_reviews.required_approving_review_count' 1 "нужен один апрув"
+# Апрув владельца реализован МЕТКОЙ approved, а не GitHub-ревью: при одном
+# человеке в организации GitHub-ревью недостижимо — свой PR апрувить нельзя,
+# а fine-grained токен агента действует от имени того же человека. Требование
+# ревью здесь означало бы, что не мерджится ни один PR.
+check '.required_pull_request_reviews.required_approving_review_count' 0 "PR обязан идти через pull request (апрув — меткой approved)"
 check '.required_status_checks.strict'                       true  "ветка обязана быть актуальной"
 
 # Обязательная проверка ровно одна и именно verdict: если сюда добавить
 # отдельные гейты, пропущенная джоба зачтётся как успешная.
 CTX=$(printf '%s' "$P" | jq -r '.required_status_checks.contexts | join(",")' 2>/dev/null)
-if [ "$CTX" = "verdict" ]; then
-  ok "обязательная проверка ровно одна: verdict"
+if [ "$CTX" = "gates / verdict" ]; then
+  ok "обязательная проверка ровно одна: gates / verdict"
 else
-  say "обязательные проверки должны быть ровно ['verdict'], фактически [$CTX]"
+  say "обязательные проверки должны быть ровно ['gates / verdict'], фактически [$CTX]"
+fi
+
+# Сверка с ФАКТИЧЕСКИ приходящими именами, а не с ожидаемым текстом настройки.
+# Имя check-run у reusable workflow составное, и настройка, записанная «как
+# задумано», может требовать проверку, которой не существует — тогда не
+# мерджится ни один PR, и об этом узнаёшь только при первом мердже.
+LAST=$(gh api "repos/$REPO/commits" -q '.[0].sha' 2>/dev/null || echo "")
+if [ -n "$LAST" ]; then
+  NAMES=$(gh api "repos/$REPO/commits/$LAST/check-runs" -q '.check_runs[].name' 2>/dev/null || echo "")
+  if [ -z "$NAMES" ]; then
+    echo "(на последнем коммите нет проверок — сверить имена не с чем)"
+  elif printf '%s\n' "$NAMES" | grep -qx "$CTX"; then
+    ok "требуемое имя '$CTX' совпадает с фактически приходящим"
+  else
+    say "требуется '$CTX', а фактически приходят: $(printf '%s' "$NAMES" | tr '\n' ',' | sed 's/,$//')"
+  fi
 fi
 
 echo
