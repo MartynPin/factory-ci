@@ -104,8 +104,9 @@ if gh api "repos/$REPO/environments/production" >/dev/null 2>&1; then
         ok "деплой-workflow отсутствует — запускать нечего"
       else
         for w in $DEPLOY; do
-          TRIG=$(gh api "repos/$REPO/contents/.github/workflows/$w" -q '.content' 2>/dev/null \
-                 | base64 -d 2>/dev/null | sed -n '/^on:/,/^[a-z]/p' || echo "")
+          TRIG=$(gh api -H "Accept: application/vnd.github.raw" \
+                   "repos/$REPO/contents/.github/workflows/$w" 2>/dev/null \
+                 | grep -v '^[[:space:]]*#' | sed -n '/^on:/,/^[a-z]/p' || echo "")
           case "$TRIG" in
             *push*|*pull_request*|*schedule*)
               say "$w запускается автоматически, а ревьюер деплоя недоступен — деплой пойдёт без человека" ;;
@@ -122,16 +123,24 @@ echo
 echo "== Вызовы factory-ci по SHA =="
 # Ссылка на @main означает, что правка в factory-ci немедленно меняет проверки
 # во всех репозиториях, включая уже открытые PR.
+# Файлы берутся ИЗ РЕПОЗИТОРИЯ по API, а не из текущего каталога: скрипт
+# может быть запущен откуда угодно, и локальная папка — не факт о $REPO.
+# Комментарии отбрасываются: в шапке шаблона стоит строка-образец
+# `uses: OWNER/factory-ci/...@<40-символьный SHA>`, и она читалась как
+# настоящий вызов. Урок L-007 в третий раз: проверка сверяла текст, а не факт.
 FOUND=0
-for f in .github/workflows/*.yml .github/workflows/*.yaml; do
-  [ -f "$f" ] || continue
+WF=$(gh api "repos/$REPO/contents/.github/workflows" -q '.[].name' 2>/dev/null | grep -E '\.ya?ml$' || true)
+for f in $WF; do
+  BODY=$(gh api -H "Accept: application/vnd.github.raw" \
+           "repos/$REPO/contents/.github/workflows/$f" 2>/dev/null || echo "")
+  [ -n "$BODY" ] || continue
   while read -r line; do
     FOUND=1
     ref="${line##*@}"
     if printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
-      ok "$(basename "$f"): вызов по SHA"
+      ok "$f: вызов по SHA"
     else
-      say "$(basename "$f"): вызов factory-ci по '@$ref' вместо 40-символьного SHA"
+      say "$f: вызов factory-ci по '@$ref' вместо 40-символьного SHA"
     fi
 
     # Владелец в вызове обязан совпадать с владельцем репозитория. После
@@ -141,13 +150,13 @@ for f in .github/workflows/*.yml .github/workflows/*.yaml; do
     called_owner=$(printf '%s' "$line" | sed -E 's|.*uses:[[:space:]]*([^/]+)/factory-ci.*|\1|')
     want_owner="${REPO%%/*}"
     if [ "$called_owner" = "$want_owner" ]; then
-      ok "$(basename "$f"): владелец factory-ci совпадает ($called_owner)"
+      ok "$f: владелец factory-ci совпадает ($called_owner)"
     else
-      say "$(basename "$f"): вызов идёт к '$called_owner/factory-ci', а репозиторий принадлежит '$want_owner'"
+      say "$f: вызов идёт к '$called_owner/factory-ci', а репозиторий принадлежит '$want_owner'"
     fi
-  done < <(grep -h "factory-ci/.github/workflows" "$f" 2>/dev/null || true)
+  done < <(printf '%s\n' "$BODY" | grep -v '^[[:space:]]*#' | grep "factory-ci/.github/workflows" || true)
 done
-[ "$FOUND" = 0 ] && echo "(в этом каталоге вызовов factory-ci не найдено — запускайте из корня продуктового репозитория)"
+[ "$FOUND" = 0 ] && echo "(в $REPO вызовов factory-ci не найдено)"
 
 echo
 if [ "$BAD" = 0 ]; then
