@@ -50,8 +50,23 @@ fi
 # Приватный репозиторий по умолчанию не отдаёт свои workflow другим репо.
 # Без этого вызов gates.yml падает с «workflow was not found».
 echo "==> 1/5  Доступ к factory-ci"
-run gh api "repos/$OWNER/factory-ci/actions/permissions/access" \
-  -X PUT -f access_level=user
+# Настройка применима только к приватным репозиториям: публичный factory-ci и
+# так доступен всем, и API отвечает 422. Раньше это роняло весь скрипт на
+# первом шаге — и защита ветки, снятая для правки, не возвращалась.
+if [ "$DRY" = "--dry-run" ]; then
+  echo "  [dry-run] gh api repos/$OWNER/factory-ci/actions/permissions/access -X PUT"
+else
+  FC_PRIVATE=$(gh api "repos/$OWNER/factory-ci" -q .private 2>/dev/null || echo "unknown")
+  if [ "$FC_PRIVATE" = "false" ]; then
+    echo "    factory-ci публичный — настройка доступа не требуется"
+  elif [ "$FC_PRIVATE" = "unknown" ]; then
+    echo "    ВНИМАНИЕ: не удалось определить видимость factory-ci, шаг пропущен"
+  else
+    gh api "repos/$OWNER/factory-ci/actions/permissions/access" -X PUT -f access_level=user >/dev/null \
+      && echo "    доступ открыт для репозиториев владельца" \
+      || echo "    ВНИМАНИЕ: не удалось открыть доступ к factory-ci"
+  fi
+fi
 
 # --- 2. Права GITHUB_TOKEN по умолчанию ------------------------------------
 # По умолчанию GitHub выдаёт токену write почти на всё. Каждая джоба обязана
