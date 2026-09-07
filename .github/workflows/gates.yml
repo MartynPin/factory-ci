@@ -166,6 +166,7 @@ jobs:
             /^playwright\.config\./, /^security-baseline\.json$/,
             /^scripts\/gates\.sh$/, /^scripts\/preflight\.sh$/,
             /^scripts\/apply-overlay\.mjs$/,
+            /^scripts\/contract-guard\.mjs$/,
           ];
 
           const hits = changed.filter(f => CONFIG.some(re => re.test(f)));
