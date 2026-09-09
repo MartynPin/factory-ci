@@ -82,8 +82,8 @@ jobs:
       - name: Изменения package.json и lockfile
         shell: bash
         run: |
-          base="${{ github.event.pull_request.base.sha }}"
-          head="${{ github.event.pull_request.head.sha }}"
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          head="${{ github.event.pull_request.head.sha || github.sha }}"
           if [ -z "$base" ] || [ -z "$head" ]; then
             echo "Не pull_request — сравнивать нечего."; exit 0
           fi
@@ -191,6 +191,7 @@ jobs:
           if ! ls tests/e2e/*.spec.ts >/dev/null 2>&1; then
             echo "::error::run-e2e=true, но e2e-тестов нет"; exit 1
           fi
+          npx --no-install next build
           npx --no-install playwright install --with-deps chromium
           npx --no-install playwright test
 
@@ -212,8 +213,8 @@ jobs:
         id: changed
         shell: bash
         run: |
-          base="${{ github.event.pull_request.base.sha }}"
-          head="${{ github.event.pull_request.head.sha }}"
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          head="${{ github.event.pull_request.head.sha || github.sha }}"
           if [ -z "$base" ] || [ -z "$head" ]; then
             echo "Не pull_request — проверки диффа пропускать нельзя, но сравнивать нечего."
             echo "files=" >> "$GITHUB_OUTPUT"
@@ -239,8 +240,8 @@ jobs:
       - name: Тесты нельзя удалить или ослабить количеством
         shell: bash
         run: |
-          base="${{ github.event.pull_request.base.sha }}"
-          head="${{ github.event.pull_request.head.sha }}"
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          head="${{ github.event.pull_request.head.sha || github.sha }}"
           if [ -z "$base" ] || [ -z "$head" ]; then
             echo "Не pull_request — сравнение тестов не применяется."
             exit 0
@@ -273,7 +274,7 @@ jobs:
                 echo "::error file=$f::Защищённый путь. Изменение возможно только отдельным PR владельца."
                 bad=1 ;;
               .github/*)
-                if ! node - "$f" "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" <<'NODE'
+                if ! node - "$f" "${{ github.event.pull_request.base.sha || github.event.before }}" "${{ github.event.pull_request.head.sha || github.sha }}" <<'NODE'
           const { execFileSync } = require("child_process");
           const [file, base, head] = process.argv.slice(2);
           const diff = execFileSync("git", ["diff", "-U0", base, head, "--", file], { encoding: "utf8" });
@@ -321,7 +322,7 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           [ -f /tmp/changed.txt ] || exit 0
-          node - "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" <<'NODE'
+          node - "${{ github.event.pull_request.base.sha || github.event.before }}" "${{ github.event.pull_request.head.sha || github.sha }}" <<'NODE'
           const fs = require("fs");
           const { execFileSync } = require("child_process");
 
@@ -392,8 +393,8 @@ jobs:
             echo "::error title=Проверка контракта отсутствует::Обязательный scripts/contract-guard.mjs отсутствует."
             exit 1
           fi
-          base="${{ github.event.pull_request.base.sha }}"
-          head="${{ github.event.pull_request.head.sha }}"
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          head="${{ github.event.pull_request.head.sha || github.sha }}"
           if [ -z "$base" ] || [ -z "$head" ]; then
             echo "Не pull_request — сравнивать нечего."
             exit 0
