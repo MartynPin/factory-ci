@@ -35,11 +35,11 @@ check '.enforce_admins.enabled'                              true  "правил
 check '.required_linear_history.enabled'                     true  "линейная история"
 check '.allow_force_pushes.enabled'                          false "force-push запрещён"
 check '.allow_deletions.enabled'                             false "удаление ветки запрещено"
-# Апрув владельца реализован МЕТКОЙ approved, а не GitHub-ревью: при одном
-# человеке в организации GitHub-ревью недостижимо — свой PR апрувить нельзя,
-# а fine-grained токен агента действует от имени того же человека. Требование
-# ревью здесь означало бы, что не мерджится ни один PR.
-check '.required_pull_request_reviews.required_approving_review_count' 0 "PR обязан идти через pull request (апрув — меткой approved)"
+# Fine-grained PAT агента действует от имени владельца, поэтому allowlist
+# owner identity не отделяет человека от агента. Пока Approval Authority или
+# отдельная GitHub App не введены, один независимый review — намеренный
+# fail-closed барьер: свой PR эта identity одобрить не может.
+check '.required_pull_request_reviews.required_approving_review_count' 1 "требуется один независимый review"
 check '.required_status_checks.strict'                       true  "ветка обязана быть актуальной"
 
 # Обязательная проверка ровно одна и именно verdict: если сюда добавить
